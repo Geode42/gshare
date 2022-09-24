@@ -1,0 +1,130 @@
+#!/usr/bin/python3
+
+import socket
+from sys import argv, exit
+from os import path
+from math import ceil
+from platform import system
+
+cwd, *args = argv
+
+def print_error(message, quit=True):
+	print('\33[1;91mError\33[0m ' + message)
+	if quit:
+		exit(1)
+
+def print_info(message):
+	print('\33[2m' + message + '\33[0m')
+
+def ask_yn(message):
+	while True:
+		response = input('\33[1;96m' + message + '\33[2m (y/n) \33[0m').lower()
+		if response in ('y', 'n'): break
+		print_error('Invalid response for y/n question', False)
+	
+	if response == 'y': return True
+	return False
+
+
+
+if args[0] in ('send', 's'):
+	mode = 's'
+elif args[0] in ('receive', 'r'):
+	mode = 'r'
+else:
+	print_error('First argument must be either send/s or receive/r')
+
+if mode == 's':
+	if len(args) != 3:
+		print_error('Exactly three arguments expected: the mode, the file, and the port')
+	
+	filepath = args[1]
+	port = int(args[2])
+
+	try:
+		# Establish connection
+		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		s.bind(('localhost', port))
+		s.listen()
+		# s = socket.create_server(('localhost', port))
+		print_info(f'Hosted a server on port {port}')
+		c, address = s.accept()
+		print_info(f'New connection from {address}')
+
+		# Ask whether file should be sent to this address
+		if not ask_yn('Send file?'):
+			c.sendall(b'')
+			s.close()
+			exit(0)
+		
+		# Send name
+		c.sendall(path.basename(filepath).encode('ascii'))
+		
+		# Get size
+		size = path.getsize(filepath)
+		number_of_sends = ceil(size / 1024)
+		
+		# Send size
+		c.sendall(number_of_sends.to_bytes(2, 'big'))
+		
+		# Send file in chunks
+		with open(filepath, 'rb') as f:
+			for _ in range(number_of_sends):
+				c.sendall(f.read(1024))
+		
+		# Close socket
+		s.close()
+	except KeyboardInterrupt:
+		s.close()
+else:
+	if len(args) != 3:
+		print_error('Exactly three arguments expected: the mode, the address, and the port')
+
+	address = args[1]
+	port = int(args[2])
+
+	try:
+		# Establish connection
+		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		s.connect((address, port))
+		
+		# Receive name
+		basename = s.recv(1024).decode('ascii')
+
+		# Quit if empty data
+		if basename == '':
+			print('Server refused to send file :(')
+			s.close()
+		
+		# I don't like Windows (this is far from comprehensive, but I'm lazy for now)
+		if system == 'Windows':
+			for char in '<>:"/\\|?*':
+				basename = basename.replace(char, '')
+		
+		name = basename
+		
+		# Get filename that doesn't already exist
+		n = 1
+		while path.isfile(name):
+			name = f'{basename} ({n})'
+			n += 1
+		
+		# Receive number of sends
+		number_of_sends = int.from_bytes(s.recv(1024), 'big')
+
+		# Just making sure
+		try:
+			with open(name):
+				print('File already exists?! Exiting')
+				exit(1)
+		except (FileExistsError, FileNotFoundError):
+			pass
+
+		# Get file in chunks
+		with open(name, 'wb') as f:
+			for _ in range(number_of_sends):
+				f.write(s.recv(1024))
+		
+		s.close()
+	except KeyboardInterrupt:
+		s.close()
