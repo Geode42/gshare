@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# v0.0.2
+# v0.0.3
 
 import socket
 from sys import argv, exit
@@ -14,7 +14,7 @@ from time import time
 local_address = 
 
 progress_bar_completed_color = 0, 170, 255
-progress_bar_update_interval = 2
+progress_bar_update_interval = 0.5
 
 
 cwd, *args = argv
@@ -37,38 +37,42 @@ def ask_yn(message):
 	return False
 
 def add_commas(number):
-	new_number = ''
+	new_number = []
 
 	for index, c in enumerate(list(reversed(str(number)))):
-		new_number += c
+		new_number.insert(0, c)
 		if (index + 1) % 3 == 0:
-			new_number += ','
+			new_number.insert(0, ',')
 	
-	return new_number
+	return ''.join(new_number)
 
 def update_progress_bar():
+	resetcode = '\33[0m'
 	bar = ''
 	bar += '\033[2K\r'
 
 	progress_bar_completed_code = f'\033[38;2;{progress_bar_completed_color[0]};{progress_bar_completed_color[1]};{progress_bar_completed_color[2]}m'
-	progress_bar_not_completed_color = f'\033[2m'
+	progress_bar_not_completed_color = f'{resetcode}\033[2m'
 	unit_color = f'\033[2m'
 	
 	percent_completed = int(bytes_completed / total_bytes * 100)
-	resetcode = '\33[0m'
 	
-	seconds_left = round((time() - start_time) / bytes_completed * (total_bytes - bytes_completed))
-	minutes_left = seconds_left / 60
-	seconds_left %= 60
-	hours_left = minutes_left / 60
-	minutes_left %= 60
+	if bytes_completed == 0:
+		time_left = ''
+	else:
+		seconds_left = round((time() - start_time) / bytes_completed * (total_bytes - bytes_completed))
+		minutes_left = seconds_left // 60
+		seconds_left -= minutes_left * 60
+		hours_left = minutes_left // 60
+		minutes_left -= hours_left * 60
 
-	time_left = ''
-	if hours_left > 0:
-		time_left += f'{resetcode}{hours_left}{unit_color}hr '
-	if minutes_left > 0:
-		time_left += f'{resetcode}{minutes_left}{unit_color}min '
-	time_left += f'{resetcode}{seconds_left}{unit_color}sec'
+		time_left = ''
+		if hours_left > 0:
+			time_left += f'{resetcode}{hours_left}{unit_color}hr '
+		if minutes_left > 0:
+			time_left += f'{resetcode}{minutes_left}{unit_color}min '
+		time_left += f'{resetcode}{seconds_left}{unit_color}sec'
+
 
 	bytes_info_max_length = len(add_commas(total_bytes)) * 2 + 1
 	bytes_info = f'{add_commas(bytes_completed)}{unit_color}/{resetcode}{add_commas(total_bytes)}'.rjust(bytes_info_max_length)
@@ -89,7 +93,7 @@ def update_progress_bar():
 	else:  # Normal
 		bar += progress_bar_completed_code + '―' * characters_completed + ' ' + progress_bar_not_completed_color + '―' * (progress_bar_length - characters_completed - 1)
 	
-	bar += f'  \033[0m{time_left} {unit_color}seconds'
+	bar += f'  \033[0m{time_left} {unit_color}'
 
 	print(bar + '\033[0m', end='')
 
@@ -136,6 +140,8 @@ if mode == 's':
 		with open(filepath, 'rb') as f:
 			start_time = time()
 			bytes_completed = 0
+
+			update_progress_bar()
 			time_of_last_progress_bar_update = time()
 			while True:
 				data = f.read(1024)
@@ -144,8 +150,10 @@ if mode == 's':
 				bytes_completed += len(data)
 				if time() - time_of_last_progress_bar_update >= progress_bar_update_interval:
 					update_progress_bar()
+					time_of_last_progress_bar_update = time()
 			c.sendall(b'')
-			print(' ' * get_terminal_size()[0] + '\r' + 'File sent')
+			update_progress_bar()
+			print('\nFile sent')
 		
 		# Close socket
 		s.close()
@@ -208,13 +216,19 @@ else:
 		with open(name, 'wb') as f:
 			start_time = time()
 			bytes_completed = 0
+
+			update_progress_bar()
+			time_of_last_progress_bar_update = time()
 			while True:
 				data = s.recv(1024)
 				if not data: break
 				f.write(data)
 				bytes_completed += len(data)
-				update_progress_bar()
-			print(' ' * get_terminal_size()[0] + '\r' + 'File received')
+				if time() - time_of_last_progress_bar_update >= progress_bar_update_interval:
+					update_progress_bar()
+					time_of_last_progress_bar_update = time()
+			update_progress_bar()
+			print('\nFile received')
 		
 		s.close()
 	except KeyboardInterrupt:
