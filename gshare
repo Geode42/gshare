@@ -1,10 +1,21 @@
 #!/usr/bin/python3
 
+# v0.0.2
+
 import socket
 from sys import argv, exit
 from os import path
 from math import ceil
 from platform import system
+from shutil import get_terminal_size
+from time import time
+
+# You local ip address, as a string
+local_address = 
+
+progress_bar_completed_color = 0, 170, 255
+progress_bar_update_interval = 2
+
 
 cwd, *args = argv
 
@@ -25,7 +36,62 @@ def ask_yn(message):
 	if response == 'y': return True
 	return False
 
+def add_commas(number):
+	new_number = ''
 
+	for index, c in enumerate(list(reversed(str(number)))):
+		new_number += c
+		if (index + 1) % 3 == 0:
+			new_number += ','
+	
+	return new_number
+
+def update_progress_bar():
+	bar = ''
+	bar += '\033[2K\r'
+
+	progress_bar_completed_code = f'\033[38;2;{progress_bar_completed_color[0]};{progress_bar_completed_color[1]};{progress_bar_completed_color[2]}m'
+	progress_bar_not_completed_color = f'\033[2m'
+	unit_color = f'\033[2m'
+	
+	percent_completed = int(bytes_completed / total_bytes * 100)
+	resetcode = '\33[0m'
+	
+	seconds_left = round((time() - start_time) / bytes_completed * (total_bytes - bytes_completed))
+	minutes_left = seconds_left / 60
+	seconds_left %= 60
+	hours_left = minutes_left / 60
+	minutes_left %= 60
+
+	time_left = ''
+	if hours_left > 0:
+		time_left += f'{resetcode}{hours_left}{unit_color}hr '
+	if minutes_left > 0:
+		time_left += f'{resetcode}{minutes_left}{unit_color}min '
+	time_left += f'{resetcode}{seconds_left}{unit_color}sec'
+
+	bytes_info_max_length = len(add_commas(total_bytes)) * 2 + 1
+	bytes_info = f'{add_commas(bytes_completed)}{unit_color}/{resetcode}{add_commas(total_bytes)}'.rjust(bytes_info_max_length)
+
+
+	progress_bar_length = get_terminal_size()[0] - (4 + 1 + bytes_info_max_length + 1   +   1 + 16) 
+	characters_completed = int(bytes_completed / total_bytes * progress_bar_length)
+
+
+	bar += f'{percent_completed}{unit_color}%{resetcode}'.rjust(4 + len(unit_color)) + ' '
+	bar += bytes_info + ' '
+
+	bar += '\033[1m'
+	if characters_completed == 0:
+		bar += progress_bar_not_completed_color + '―' * progress_bar_length
+	elif characters_completed >= progress_bar_length - 1:
+		bar += progress_bar_completed_code + '―' * characters_completed + ' ' * (progress_bar_length - characters_completed)
+	else:  # Normal
+		bar += progress_bar_completed_code + '―' * characters_completed + ' ' + progress_bar_not_completed_color + '―' * (progress_bar_length - characters_completed - 1)
+	
+	bar += f'  \033[0m{time_left} {unit_color}seconds'
+
+	print(bar + '\033[0m', end='')
 
 if args[0] in ('send', 's'):
 	mode = 's'
@@ -44,10 +110,10 @@ if mode == 's':
 	try:
 		# Establish connection
 		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		s.bind(('localhost', port))
-		s.listen()
-		# s = socket.create_server(('localhost', port))
+		s.bind((local_address, port))
 		print_info(f'Hosted a server on port {port}')
+		s.listen()
+		print_info('Waiting for a connection')
 		c, address = s.accept()
 		print_info(f'New connection from {address}')
 
@@ -61,16 +127,25 @@ if mode == 's':
 		c.sendall(path.basename(filepath).encode('ascii'))
 		
 		# Get size
-		size = path.getsize(filepath)
-		number_of_sends = ceil(size / 1024)
+		total_bytes = path.getsize(filepath)
 		
 		# Send size
-		c.sendall(number_of_sends.to_bytes(2, 'big'))
+		c.sendall(total_bytes.to_bytes(5, 'big'))
 		
 		# Send file in chunks
 		with open(filepath, 'rb') as f:
-			for _ in range(number_of_sends):
-				c.sendall(f.read(1024))
+			start_time = time()
+			bytes_completed = 0
+			time_of_last_progress_bar_update = time()
+			while True:
+				data = f.read(1024)
+				if not data: break
+				c.sendall(data)
+				bytes_completed += len(data)
+				if time() - time_of_last_progress_bar_update >= progress_bar_update_interval:
+					update_progress_bar()
+			c.sendall(b'')
+			print(' ' * get_terminal_size()[0] + '\r' + 'File sent')
 		
 		# Close socket
 		s.close()
@@ -85,32 +160,39 @@ else:
 
 	try:
 		# Establish connection
+		print_info('Trying to connect')
 		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		s.connect((address, port))
+		print_info('Established connection')
 		
 		# Receive name
-		basename = s.recv(1024).decode('ascii')
+		namedata = s.recv(1024).decode('ascii')
 
 		# Quit if empty data
-		if basename == '':
+		if namedata == '':
 			print('Server refused to send file :(')
 			s.close()
+		
+		print_info('Received name')
+		
 		
 		# I don't like Windows (this is far from comprehensive, but I'm lazy for now)
 		if system == 'Windows':
 			for char in '<>:"/\\|?*':
-				basename = basename.replace(char, '')
+				namedata = namedata.replace(char, '')
 		
-		name = basename
+		# Name stuff
+		basestem, extension = namedata.split('.', 1)
+		name = basestem + '.' + extension
 		
 		# Get filename that doesn't already exist
 		n = 1
 		while path.isfile(name):
-			name = f'{basename} ({n})'
+			name = f'{basestem} ({n}).{extension}'
 			n += 1
 		
 		# Receive number of sends
-		number_of_sends = int.from_bytes(s.recv(1024), 'big')
+		total_bytes = int.from_bytes(s.recv(5), 'big')
 
 		# Just making sure
 		try:
@@ -120,10 +202,19 @@ else:
 		except (FileExistsError, FileNotFoundError):
 			pass
 
+		print_info('Receiving file')
+
 		# Get file in chunks
 		with open(name, 'wb') as f:
-			for _ in range(number_of_sends):
-				f.write(s.recv(1024))
+			start_time = time()
+			bytes_completed = 0
+			while True:
+				data = s.recv(1024)
+				if not data: break
+				f.write(data)
+				bytes_completed += len(data)
+				update_progress_bar()
+			print(' ' * get_terminal_size()[0] + '\r' + 'File received')
 		
 		s.close()
 	except KeyboardInterrupt:
