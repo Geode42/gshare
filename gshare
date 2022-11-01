@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# v0.0.4
+# v0.0.5
 
 import socket
 from sys import argv, exit
@@ -9,13 +9,23 @@ from math import ceil
 from platform import system
 from shutil import get_terminal_size
 from time import time
-import sys
+from time import sleep
 
 progress_bar_completed_color = 0, 170, 255
 progress_bar_update_interval = 0.5
 
 
-cwd, *args = argv
+cwd, *args1 = argv
+
+args = []
+autosend = False
+for arg in args1:
+	if arg == '-y':
+		autosend = True
+		continue
+	args.append(arg)
+
+print(autosend)
 
 def print_error(message, quit=True):
 	print('\33[1;91mError\33[0m ' + message)
@@ -116,10 +126,10 @@ if mode == 's':
 	filepath = args[1]
 	port = int(args[2])
 
+	# Establish connection
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.bind(('', port))
 	try:
-		# Establish connection
-		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		s.bind(('', port))
 		print_info(f'Hosted a server on port {port}')
 		s.listen()
 		print_info('Waiting for a connection')
@@ -127,10 +137,10 @@ if mode == 's':
 		print_info(f'New connection from {address}')
 
 		# Ask whether file should be sent to this address
-		if not ask_yn('Send file?'):
-			c.send(b'')
-			s.close()
-			exit(0)
+		if not autosend:
+			if not ask_yn('Send file?'):
+				c.send(b'')
+				raise Exception
 		
 		# Send name
 		c.send(path.basename(filepath).encode('ascii'))
@@ -159,11 +169,10 @@ if mode == 's':
 			c.send(b'')
 			update_progress_bar()
 			print('\nFile sent')
-		
+	finally:
 		# Close socket
 		s.close()
-	except KeyboardInterrupt:
-		s.close()
+		print_info('Socket closed')
 else:
 	if len(args) != 3:
 		print_error('Exactly three arguments expected: the mode, the address, and the port')
@@ -171,21 +180,25 @@ else:
 	address = args[1]
 	port = int(args[2])
 
-	try:
-		# Establish connection
-		print_info('Trying to connect')
-		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		s.connect((address, port))
-		print_info('Established connection')
+	# Establish connection
+	print_info('Trying to connect')
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	while True:
+		try:
+			s.connect((address, port))
+			break
+		except ConnectionRefusedError:
+			sleep(1)
+	print_info('Established connection')
 		
+	try:
 		# Receive name
 		namedata = s.recv(1024).decode('ascii')
 
 		# Quit if empty data
 		if namedata == '':
 			print('Server refused to send file :(')
-			s.close()
-			sys.exit()
+			raise Exception
 		
 		print_info('Received name')
 		
@@ -196,13 +209,17 @@ else:
 				namedata = namedata.replace(char, '')
 		
 		# Name stuff
-		basestem, extension = namedata.split('.', 1)
-		name = basestem + '.' + extension
+		if '.' in namedata:
+			basestem, extension = namedata.split('.', 1)
+			extension = '.' + extension
+		else:
+			basestem, extension = namedata, ''
+		name = basestem + extension
 		
 		# Get filename that doesn't already exist
 		n = 1
 		while path.isfile(name):
-			name = f'{basestem} ({n}).{extension}'
+			name = f'{basestem} ({n}){extension}'
 			n += 1
 		
 		# Receive number of sends
@@ -235,7 +252,7 @@ else:
 					time_of_last_progress_bar_update = time()
 			update_progress_bar()
 			print('\nFile received')
-		
+	finally:
+		# Close socket
 		s.close()
-	except KeyboardInterrupt:
-		s.close()
+		print_info('Socket closed')
