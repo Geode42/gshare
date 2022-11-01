@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# v0.0.3
+# v0.0.4
 
 import socket
 from sys import argv, exit
@@ -9,9 +9,7 @@ from math import ceil
 from platform import system
 from shutil import get_terminal_size
 from time import time
-
-# You local ip address, as a string
-local_address = 
+import sys
 
 progress_bar_completed_color = 0, 170, 255
 progress_bar_update_interval = 0.5
@@ -46,6 +44,13 @@ def add_commas(number):
 	
 	return ''.join(new_number)
 
+def shorten_file_size(size: int):
+	units = ('kB', 1e3), ('MB', 1e6), ('GB', 1e9)
+
+	for unitname, unitsize in tuple(reversed(units)):
+		if size >= unitsize:
+			return str(round(size / unitsize, 1)) + unitname
+
 def update_progress_bar():
 	resetcode = '\33[0m'
 	bar = ''
@@ -75,7 +80,7 @@ def update_progress_bar():
 
 
 	bytes_info_max_length = len(add_commas(total_bytes)) * 2 + 1
-	bytes_info = f'{add_commas(bytes_completed)}{unit_color}/{resetcode}{add_commas(total_bytes)}'.rjust(bytes_info_max_length)
+	bytes_info = f'{shorten_file_size(bytes_completed)}{unit_color}/{resetcode}{shorten_file_size(total_bytes)}'.rjust(bytes_info_max_length)
 
 
 	progress_bar_length = get_terminal_size()[0] - (4 + 1 + bytes_info_max_length + 1   +   1 + 16) 
@@ -114,7 +119,7 @@ if mode == 's':
 	try:
 		# Establish connection
 		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		s.bind((local_address, port))
+		s.bind(('', port))
 		print_info(f'Hosted a server on port {port}')
 		s.listen()
 		print_info('Waiting for a connection')
@@ -123,18 +128,18 @@ if mode == 's':
 
 		# Ask whether file should be sent to this address
 		if not ask_yn('Send file?'):
-			c.sendall(b'')
+			c.send(b'')
 			s.close()
 			exit(0)
 		
 		# Send name
-		c.sendall(path.basename(filepath).encode('ascii'))
+		c.send(path.basename(filepath).encode('ascii'))
 		
 		# Get size
 		total_bytes = path.getsize(filepath)
 		
 		# Send size
-		c.sendall(total_bytes.to_bytes(5, 'big'))
+		c.send(total_bytes.to_bytes(5, 'big'))
 		
 		# Send file in chunks
 		with open(filepath, 'rb') as f:
@@ -146,12 +151,12 @@ if mode == 's':
 			while True:
 				data = f.read(1024)
 				if not data: break
-				c.sendall(data)
+				c.send(data)
 				bytes_completed += len(data)
 				if time() - time_of_last_progress_bar_update >= progress_bar_update_interval:
 					update_progress_bar()
 					time_of_last_progress_bar_update = time()
-			c.sendall(b'')
+			c.send(b'')
 			update_progress_bar()
 			print('\nFile sent')
 		
@@ -180,6 +185,7 @@ else:
 		if namedata == '':
 			print('Server refused to send file :(')
 			s.close()
+			sys.exit()
 		
 		print_info('Received name')
 		
