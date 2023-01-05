@@ -10,7 +10,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
-	"reflect"
+	// "reflect"
 	"strconv"
 	"strings"
 )
@@ -92,7 +92,7 @@ func sendFile(ipAddress, filePath string) {
 
 
 	// Create read buffer
-	readBuffer := make([]byte, 1024)
+	readBuffer := make([]byte, CHUNKSIZE)
 	// Create reader
 	r := io.Reader(f)
 
@@ -121,25 +121,14 @@ func receiveFile(ipAddress string) {
 
 	// Get filename
 	filenameBuffer := make([]byte, 1024)
-	// fmt.Println(len(filenameBuffer))
-	_, err = conn.Read(filenameBuffer)
-	// fmt.Println(n)
+	// fmt.Println(filenameBuffer) // DEBUG
+	n, err := conn.Read(filenameBuffer)
+	// fmt.Println(n) // DEBUG
 	if err != nil {
 		panic(err)
 	}
-	// filenameBuffer contains 1024 bytes, but the filename is probably shorter
-	// than that. That means that you get a couple of bytes representing the
-	// filename, and then hundreds of zeros. Running "string(filenameBuffer)"
-	// by itself would produce a string that may look normal, but actually has
-	// a ton of stuff after the actual text. While Println doesn't seem to have
-	// a problem with it, os.Stat gets really confused. So, instead of
-	// converting the entirety filenameBuffer into a string, only the part up
-	// to how many bytes were read (that's "n") are converted into a string;
-	// leaving this pesky zeros out of it :)
-	// I'm sorry, I spent so long trying to figure this out, I wanted to
-	// express this somewhere
-	filename := strings.TrimSpace(string(filenameBuffer))
-	fmt.Printf("%X\n", filename)
+	filename := strings.TrimSpace(string(filenameBuffer)[:n])
+	// fmt.Printf("%X\n", filename) // DEBUG
 
 	// Get permissions
 	permBuffer := make([]byte, 1024)
@@ -177,31 +166,31 @@ func receiveFile(ipAddress string) {
 		}
 	}
 
-	fmt.Println("hi", newFilename)
+	// fmt.Println("hi", newFilename) // DEBUG
 
 	f, err := os.OpenFile(newFilename, os.O_WRONLY | os.O_CREATE | os.O_EXCL, perm)
 	if err != nil {
-		fmt.Println(reflect.TypeOf(err))
-		fmt.Println(err)
+		// fmt.Println(reflect.TypeOf(err)) // DEBUG
+		// fmt.Println(err) // DEBUG
 		var idk *fs.PathError
 		if errors.As(err, &idk) {
-			fmt.Println("hi")
+			fmt.Println("hi") // DEBUG
 		}
 		panic(err)
 	}
 
-	dataBuffer := make([]byte, 1024)
+	dataBuffer := make([]byte, CHUNKSIZE)
 
 	for {
 		n, err := conn.Read(dataBuffer)
-		fmt.Println(n)
+		// fmt.Println(n) // DEBUG
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println(err) // DEBUG
 			break
 			// fmt.Println(reflect.TypeOf(err))
 			// panic(err)
 		}
-		fmt.Println("NEW WRITE")
+		// fmt.Println("NEW WRITE") // DEBUG
 		f.Write(dataBuffer[:n])
 	}
 }
