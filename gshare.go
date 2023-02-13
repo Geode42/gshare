@@ -12,17 +12,101 @@ import (
 	"strings"
 )
 
+// Usage: gshare <address> [file]
+
 const (
 	PORT = "1234"
 	CHUNKSIZE = 1024
 	SECONDS_BETWEEN_CONNECTION_ATTEMPTS = 0.5
-	DEBUG_MODE = true
+	DEBUG_MODE = false
+	progressBarLength = 40
+	asciiProgressBar = false
 )
 
 func checkerr(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func hideCursor() {
+	fmt.Print("\033[?25l")
+}
+
+func showCursor() {
+	fmt.Print("\033[?25h")
+}
+
+func UpdateProgressBar(completed, total int, startTime, lastUpdateTime time.Time, taskName, successMessage string) {
+	// Based on Rich (a Python library)'s progress bar
+	// The bar characters below can be found on https://www.w3.org/TR/xml-entity-names/025.html
+
+	// Return if it's been less than half a second (for perfomance reasons)
+	if time.Since(lastUpdateTime) < 500 * time.Millisecond {
+		return
+	}
+
+	fullBarCompleted := "━"
+	fullBarNotCompleted := fullBarCompleted
+	halfBarLeft := "╸"
+	halfBarRight := "╺"
+	if asciiProgressBar {
+		fullBarCompleted = "#"
+		fullBarNotCompleted = "-"
+		halfBarLeft = " "
+		halfBarRight = " "
+	}
+	progressBarShadedColor := "\033[34m"
+	progressBarNotShadedColor := "\033[30;2m"
+	clearLineCode := "\033[2K"
+	moveCursorToStartCode := "\r"
+	resetFormattingCode := "\033[0m"
+	successColorCode := "\033[92m"
+
+	// If done
+	if completed == total {
+		fmt.Println(clearLineCode + moveCursorToStartCode + successColorCode + successMessage + resetFormattingCode)
+		return
+	}
+
+	progressBar := ""
+
+	// Add task name
+	progressBar += taskName + "..." + " "
+
+	// Add shaded color
+	progressBar += progressBarShadedColor
+
+	// halfBarLeft and halfBarRight chars make it possible for the progress bar to occupy half a terminal cell, which I'm going to call a subChar
+	// This is the number of completed subChars
+	numSubChars := progressBarLength * 2 * completed / total
+
+	// Add completed full bars
+	progressBar += strings.Repeat(fullBarCompleted, numSubChars / 2)
+
+
+	// Add half bar and not-shaded-color
+	if numSubChars % 2 == 0 {
+		progressBar += progressBarNotShadedColor
+		progressBar += halfBarRight
+	} else {
+		progressBar += halfBarLeft
+		progressBar += progressBarNotShadedColor
+	}
+
+	// Add not-shaded full bars
+	progressBar += strings.Repeat(fullBarNotCompleted, progressBarLength - numSubChars / 2 - 1)
+	
+	// Add eta estimate
+	nanosecondsSinceStart := int(time.Since(startTime))
+	progressBar += resetFormattingCode
+	progressBar += "  " + "eta" + " "
+	if completed != 0 {
+		progressBar += (time.Duration(nanosecondsSinceStart / completed * (total - completed)) * time.Nanosecond).Truncate(time.Second).String()
+	}
+	
+	// Draw bar
+	fmt.Print(clearLineCode + moveCursorToStartCode + progressBar)
 }
 
 func fileExists(path string) (bool) {
@@ -60,7 +144,7 @@ func InfoPrint(info ...any) {
 }
 
 func InfoPrintReplaceLine(info ...any) {
-	fmt.Print("\033[K") // clear line
+	fmt.Print("\033[2K") // clear line
 	fmt.Print("\r") // move cursor to start of line
 	fmt.Print("\033[2m") // set dim/faint mode
 	for i, word := range info {
@@ -71,8 +155,6 @@ func InfoPrintReplaceLine(info ...any) {
 	}
 	fmt.Print("\033[0m") // reset formatting
 }
-
-// gshare <address> [file]
 
 func sendFile(ipAddress, filePath string) {
 	// ---------- Get Socket Connection --------------------
@@ -167,17 +249,20 @@ func sendFile(ipAddress, filePath string) {
 	reader := io.Reader(file)
 
 
+	startTime := time.Now()
+	timeOfLastProgressBarUpdate := time.Unix(0, 0) // The progress bar was last updated in 1970, because why not
+	hideCursor()
+	UpdateProgressBar(0, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Sending", "\"" + filename + "\"" + " sent!")
+
 	for chunksSentCount := int64(0); chunksSentCount < chunkCount; chunksSentCount++ {
 		// Read next chunk
 		n, err := reader.Read(readBuffer)
 		checkerr(err)
 		// Send chunk
 		conn.Write(readBuffer[:n])
-		InfoPrintReplaceLine(strconv.FormatInt(chunksSentCount, 10) + "/" + strconv.FormatInt(chunkCount, 10), "chunks sent")
+		UpdateProgressBar(int(chunksSentCount) + 1, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Sending", "\"" + filename + "\"" + " sent!")
 	}
-	fmt.Println() // the replace-line variation omits the newline, so print one back in
-
-	InfoPrint(chunkCount, "File sent :)")
+	showCursor()
 }
 
 func receiveFile(ipAddress string) {
@@ -298,13 +383,19 @@ func receiveFile(ipAddress string) {
 
 	dataBuffer := make([]byte, CHUNKSIZE)
 
+
+	startTime := time.Now()
+	timeOfLastProgressBarUpdate := time.Unix(0, 0) // The progress bar was last updated in 1970, because why not
+	hideCursor()
+	UpdateProgressBar(0, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Receiving", "\"" + filename + "\"" + " received!")
+
 	for chunksReceived := int64(0); chunksReceived < chunkCount; chunksReceived++ {
 		n, err := conn.Read(dataBuffer)
 		checkerr(err)
 		f.Write(dataBuffer[:n])
-		InfoPrintReplaceLine(strconv.FormatInt(chunksReceived + 1, 10) + "/" + strconv.FormatInt(chunkCount, 10), "chunks received")
+		UpdateProgressBar(int(chunksReceived) + 1, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Receiving", "\"" + filename + "\"" + " received!")
 	}
-	fmt.Println() // the replace-line variation omits the newline, so print one back in
+	showCursor()
 }
 
 
