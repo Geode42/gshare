@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"time"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Usage: gshare <address> [file]
@@ -18,7 +18,6 @@ const (
 	PORT = "1234"
 	CHUNKSIZE = 1024
 	SECONDS_BETWEEN_CONNECTION_ATTEMPTS = 0.5
-	DEBUG_MODE = false
 	progressBarLength = 40
 	asciiProgressBar = false
 )
@@ -156,6 +155,96 @@ func InfoPrintReplaceLine(info ...any) {
 	fmt.Print("\033[0m") // reset formatting
 }
 
+func sendUint64(conn net.Conn, v uint64, infoPrintMessage string) {
+	byteSlice := make([]byte, 8)
+	binary.BigEndian.PutUint64(byteSlice, v)
+	conn.Write(byteSlice)
+	if infoPrintMessage != "" {
+		InfoPrint(infoPrintMessage)
+	}
+}
+
+func sendUint32(conn net.Conn, v uint32, infoPrintMessage string) {
+	byteSlice := make([]byte, 4)
+	binary.BigEndian.PutUint32(byteSlice, v)
+	conn.Write(byteSlice)
+	if infoPrintMessage != "" {
+		InfoPrint(infoPrintMessage)
+	}
+}
+
+func sendUint8(conn net.Conn, v uint8, infoPrintMessage string) {
+	conn.Write([]byte{v})
+	if infoPrintMessage != "" {
+		InfoPrint(infoPrintMessage)
+	}
+}
+
+func sendString(conn net.Conn, s, infoPrintMessage string) {
+	conn.Write([]byte(s))
+	if infoPrintMessage != "" {
+		InfoPrint(infoPrintMessage)
+	}
+}
+
+func recvUint64(conn net.Conn) uint64 {
+	buffer := make([]byte, 8)
+	_, err := conn.Read(buffer)
+	checkerr(err)
+	return binary.BigEndian.Uint64(buffer)
+}
+
+func recvUint32(conn net.Conn) uint32 {
+	buffer := make([]byte, 4)
+	_, err := conn.Read(buffer)
+	checkerr(err)
+	return binary.BigEndian.Uint32(buffer)
+}
+
+func recvUint8(conn net.Conn) uint8 {
+	buffer := make([]byte, 1)
+	_, err := conn.Read(buffer)
+	checkerr(err)
+	return buffer[0]
+}
+
+func recvString(conn net.Conn, numBytes int) string {
+	buffer := make([]byte, numBytes)
+	_, err := conn.Read(buffer)
+	checkerr(err)
+	return string(buffer)
+}
+
+func getUniqueFilename(filename string) string {
+	newFilename := filename
+	if fileExists(filename) {
+		dotIndex, err := getIndexOfLastOccurrenceOfChar(filename, '.')
+		
+		var stem, extension string
+		
+		if err == nil {
+			stem = filename[:dotIndex]
+			extension = filename[dotIndex:]
+		} else if err.Error() == "char not in string" {
+			stem = filename
+			extension = ""
+		} else {
+			checkerr(err)
+		}
+
+		filenameNumber := 1
+		for {
+			newFilename = stem + "(" + strconv.Itoa(filenameNumber) + ")" + extension
+			if !fileExists(newFilename) {
+				break
+			}
+			filenameNumber++
+		}
+	}
+	return newFilename
+}
+
+
 func sendFile(ipAddress, filePath string) {
 	// ---------- Get Socket Connection --------------------
 
@@ -175,12 +264,11 @@ func sendFile(ipAddress, filePath string) {
 		remoteAddress, _, _ := strings.Cut(conn.RemoteAddr().String(), ":")
 		// Close the connection and redo the loop
 		if remoteAddress != ipAddress {
-			// Send a 0 to say that they've been rejected
-			responseBytes := make([]byte, 1)
-			responseBytes[0] = 0
-			conn.Write(responseBytes)
+			// Send a 0 to say they've been rejected, let them know that there're plenty of other fish in the sea
+			sendUint8(conn, 1, "")
 
 			conn.Close()
+
 			InfoPrint("Rejected connection from", remoteAddress)
 			continue
 		}
@@ -197,6 +285,24 @@ func sendFile(ipAddress, filePath string) {
 		InfoPrint("Connection established with", remoteAddress)
 		break
 	}
+	// Sync chunksizes
+	chunksize := CHUNKSIZE
+	receiverChunkSize := int(recvUint64(conn))
+	if receiverChunkSize < chunksize {
+		fmt.Println("Receiver is using a smaller chunksize", "(" + strconv.Itoa(receiverChunkSize) + "),", "using the receiver's chunksize")
+		chunksize = receiverChunkSize
+	}
+	sendUint64(conn, uint64(chunksize), "Synced chunksize sent")
+	
+	receiverCanReceiveFile := recvUint8(conn)
+	if receiverCanReceiveFile == 0 {
+		fmt.Println("Receiver sent back a 0, meaning they can't receive the file. That should only be possible if the source code was modified, so I'm blaming you for this one")
+		return
+	}
+	if receiverCanReceiveFile != 1 {
+		fmt.Println("The receiver sent back", strconv.Itoa(int(receiverCanReceiveFile)), "when only a 1 or a 0 was expected, idk what's going on there but I'm just going to send the file")
+	}
+
 	// Open file for reading
 	file, err := os.Open(filePath)
 	checkerr(err)
@@ -204,44 +310,18 @@ func sendFile(ipAddress, filePath string) {
 	defer file.Close()
 
 	// ---------- Send Filename --------------------
-	// Send the filename
-	filename := file.Name() // the .name method (idc if it's technically a function it's a method) returns just the filename without the full path
-	filenameBytes := []byte(filename)
-	if DEBUG_MODE {
-		InfoPrint("filename:", filename)
-		InfoPrint("filename bytes:", filenameBytes)
-		InfoPrint("filename bytes length:", len(filenameBytes))
-	}
-	conn.Write(filenameBytes)
-	InfoPrint("Filename sent")
-
-
-	// ---------- Send Permissions --------------------
-	// Get permissions
+	filename := file.Name() // the .name method returns just the filename without the full path
 	info, _ := os.Stat(filePath)
-	perm := uint32(info.Mode())
-	permBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(permBytes, perm)
-	if DEBUG_MODE {
-		InfoPrint("perm:", perm)
-		InfoPrint("perm bytes:", permBytes)
-	}
-	conn.Write(permBytes)
-	InfoPrint("Permissions sent")
+	filesize := uint64(info.Size())
+	chunkCount := uint64((filesize + CHUNKSIZE - 1) / CHUNKSIZE)// Divide by chunksize, round up
 
-	// ---------- Send Chunk Count --------------------
-	chunkCount := (info.Size() + CHUNKSIZE - 1) / CHUNKSIZE // Divide by chunksize, round up
-	chunkCountBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(chunkCountBytes, uint64(chunkCount))
-	if DEBUG_MODE {
-		InfoPrint("chunk-count:", chunkCount)
-		InfoPrint("chunk-count bytes:", chunkCountBytes)
-	}
-	conn.Write(chunkCountBytes)
-	InfoPrint("Chunk count sent")
+	sendUint64(conn, uint64(len(filename)), "Filename-length sent")
+	sendString(conn, filename, "Filename sent")
+	sendUint32(conn, uint32(info.Mode()), "Permissions sent")
+	sendUint64(conn, chunkCount, "Chunk count sent")
+	sendUint64(conn, chunkCount * CHUNKSIZE - filesize, "Last-chunk-length sent")
 	
 	// ---------- Send File in Chunks --------------------
-
 
 	// Create read buffer
 	readBuffer := make([]byte, CHUNKSIZE)
@@ -254,7 +334,7 @@ func sendFile(ipAddress, filePath string) {
 	hideCursor()
 	UpdateProgressBar(0, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Sending", "\"" + filename + "\"" + " sent!")
 
-	for chunksSentCount := int64(0); chunksSentCount < chunkCount; chunksSentCount++ {
+	for chunksSentCount := uint64(0); chunksSentCount < chunkCount; chunksSentCount++ {
 		// Read next chunk
 		n, err := reader.Read(readBuffer)
 		checkerr(err)
@@ -273,20 +353,8 @@ func receiveFile(ipAddress string) {
 	var err error
 
 	// Keep trying to connect
-	attemptNumber := 0
 	for {
-		attemptNumber++
-
 		conn, err = net.Dial("tcp", ipAddress + ":" + PORT)
-
-		if DEBUG_MODE {
-			if err == nil {
-				InfoPrintReplaceLine("Connected after", attemptNumber, "attempts")
-				fmt.Println() // the replace-line variation omits the newline, so print one back in
-			} else {
-				InfoPrintReplaceLine("Attempt", attemptNumber, "error:", "\"" + err.Error() + "\"")
-			}
-		}
 
 		// If everything worked out continue with the rest of the program
 		if err == nil {break}
@@ -298,14 +366,7 @@ func receiveFile(ipAddress string) {
 	defer conn.Close()
 
 	// Checker whether accepted or rejected
-	acceptedOrRejectedBuffer := make([]byte, 1) // The name sounds bad but I can't think of a better one
-	_, err = conn.Read(acceptedOrRejectedBuffer)
-	checkerr(err)
-	acceptedOrRejected := int(acceptedOrRejectedBuffer[0])
-	if DEBUG_MODE {
-		InfoPrint("accepted/rejected:", acceptedOrRejected)
-		InfoPrint("accepted/rejected byte:", acceptedOrRejectedBuffer)
-	}
+	acceptedOrRejected := recvUint8(conn)
 	if acceptedOrRejected == 0 {
 		InfoPrint("Connection rejected, perhaps your address was mistyped on the other end?")
 		return
@@ -316,69 +377,32 @@ func receiveFile(ipAddress string) {
 		return
 	}
 
+	// Sync chunksizes
+	sendUint64(conn, CHUNKSIZE, "Chunksize sent")
+	chunksize := int(recvUint64(conn))
 
-
-	// Get filename
-	filenameBuffer := make([]byte, 1024)
-	n, err := conn.Read(filenameBuffer)
-	checkerr(err)
-	filename := strings.TrimSpace(string(filenameBuffer[:n]))
-	if DEBUG_MODE {
-		InfoPrint("received filename:", filename)
-		InfoPrint("received filename bytes:", filenameBuffer[:n])
-		InfoPrint("received filename bytes length:", n)
+	if chunksize > CHUNKSIZE {
+		fmt.Println("The server sent back a larger chunksize", "(" + strconv.Itoa(chunksize) + ")", "the smaller chunksize is supposed to be chosen, so idk what's going on here, exiting")
+		sendUint8(conn, 0, "")
+		return
 	}
 
+	sendUint8(conn, 1, "Sent receiver-can-receive-file")
+
+
+	filenameLength := int(recvUint64(conn))
+	filename := recvString(conn, filenameLength)
+	perm := os.FileMode(recvUint32(conn))
+	chunkCount := recvUint64(conn)
+	lastChunkLength := recvUint64(conn)
+	
 	InfoPrint("Receiving \"" + filename + "\"")
-
-
-	// Get permissions
-	permBuffer := make([]byte, 4)
-	conn.Read(permBuffer)
-	perm := os.FileMode(binary.BigEndian.Uint32(permBuffer))
-	if DEBUG_MODE {
-		InfoPrint("received perm:", perm)
-		InfoPrint("received perm bytes:", permBuffer)
-	}
-
-	// Get chunk count
-	chunkCountBuffer := make([]byte, 8)
-	conn.Read(chunkCountBuffer)
-	chunkCount := int64(binary.BigEndian.Uint64(chunkCountBuffer))
-	if DEBUG_MODE {
-		InfoPrint("received chunk-count:", chunkCount)
-		InfoPrint("received chunk-count bytes:", chunkCountBuffer)
-	}
-
-
-	// ---------- Get unique filename --------------------
+	
 	// Example:
 	// a.txt -> a(2).txt
-	newFilename := filename
-	if fileExists(filename) {
-		extensionSeperatorDotIndex, err := getIndexOfLastOccurrenceOfChar(filename, '.')
-		var stem, extension string
-		if err == nil {
-			stem = filename[:extensionSeperatorDotIndex]
-			extension = filename[extensionSeperatorDotIndex:]
-		} else if err.Error() == "char not in string" {
-			stem = filename
-			extension = ""
-		} else {
-			checkerr(err)
-		}
+	filename = getUniqueFilename(filename)
 
-		filenameNumber := 1
-		for {
-			newFilename = stem + "(" + strconv.Itoa(filenameNumber) + ")" + extension
-			if !fileExists(newFilename) {
-				break
-			}
-			filenameNumber++
-		}
-	}
-
-	f, err := os.OpenFile(newFilename, os.O_WRONLY | os.O_CREATE | os.O_EXCL, perm)
+	f, err := os.OpenFile(filename, os.O_WRONLY | os.O_CREATE | os.O_EXCL, perm)
 	checkerr(err)
 
 	dataBuffer := make([]byte, CHUNKSIZE)
@@ -389,10 +413,14 @@ func receiveFile(ipAddress string) {
 	hideCursor()
 	UpdateProgressBar(0, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Receiving", "\"" + filename + "\"" + " received!")
 
-	for chunksReceived := int64(0); chunksReceived < chunkCount; chunksReceived++ {
-		n, err := conn.Read(dataBuffer)
+	for chunksReceived := uint64(0); chunksReceived < chunkCount; chunksReceived++ {
+		_, err := conn.Read(dataBuffer)
 		checkerr(err)
-		f.Write(dataBuffer[:n])
+		if chunksReceived == chunkCount - 1 {
+			f.Write(dataBuffer[:lastChunkLength])
+		} else {
+			f.Write(dataBuffer)
+		}
 		UpdateProgressBar(int(chunksReceived) + 1, int(chunkCount), startTime, timeOfLastProgressBarUpdate, "Receiving", "\"" + filename + "\"" + " received!")
 	}
 	showCursor()
